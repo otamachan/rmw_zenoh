@@ -312,40 +312,54 @@ SubscriptionData::~SubscriptionData()
 ///=============================================================================
 rmw_ret_t SubscriptionData::shutdown()
 {
+  std::optional<zenoh::LivelinessToken> token;
+  std::optional<zenoh::ext::AdvancedSubscriber<void>> sub;
+  std::shared_ptr<zenoh::Session> sess;
+  std::string topic_name;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (is_shutdown_ || !initialized_) {
+      return RMW_RET_OK;
+    }
+
+    // Remove any event callbacks registered to this subscription.
+    graph_cache_->remove_qos_event_callbacks(entity_->gid_hash());
+
+    topic_name = entity_->topic_info().value().name_;
+    token = std::move(token_);
+    sub = std::move(sub_);
+    // Keep the session alive until the undeclare below is done.
+    sess = std::move(sess_);
+    is_shutdown_ = true;
+    initialized_ = false;
+  }
+
+  // Undeclare outside of mutex_: it blocks until in-flight sample callbacks
+  // complete, and those take mutex_ in add_new_message().
   rmw_ret_t ret = RMW_RET_OK;
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (is_shutdown_ || !initialized_) {
-    return ret;
-  }
-
-  // Remove any event callbacks registered to this subscription.
-  graph_cache_->remove_qos_event_callbacks(entity_->gid_hash());
-
-  // Unregister this subscription from the ROS graph.
   zenoh::ZResult result;
-  std::move(token_).value().undeclare(&result);
-  if (result != Z_OK) {
-    RMW_ZENOH_LOG_ERROR_NAMED(
-      "rmw_zenoh_cpp",
-      "Unable to undeclare the liveliness token for topic '%s'",
-      entity_->topic_info().value().name_.c_str());
-    return RMW_RET_ERROR;
+  if (token.has_value()) {
+    std::move(token).value().undeclare(&result);
+    if (result != Z_OK) {
+      RMW_ZENOH_LOG_ERROR_NAMED(
+        "rmw_zenoh_cpp",
+        "Unable to undeclare the liveliness token for topic '%s'",
+        topic_name.c_str());
+      ret = RMW_RET_ERROR;
+    }
   }
 
-  if (sub_.has_value()) {
-    std::move(sub_.value()).undeclare(&result);
+  if (sub.has_value()) {
+    std::move(sub).value().undeclare(&result);
     if (result != Z_OK) {
       RMW_ZENOH_LOG_ERROR_NAMED(
         "rmw_zenoh_cpp",
         "Unable to undeclare the subscriber for topic '%s'",
-        entity_->topic_info().value().name_.c_str());
-      return RMW_RET_ERROR;
+        topic_name.c_str());
+      ret = RMW_RET_ERROR;
     }
   }
 
-  sess_.reset();
-  is_shutdown_ = true;
-  initialized_ = false;
   return ret;
 }
 

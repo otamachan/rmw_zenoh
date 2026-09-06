@@ -187,6 +187,8 @@ std::shared_ptr<ServiceData> ServiceData::make(
     return nullptr;
   }
 
+  service_data->initialized_ = true;
+
   return service_data;
 }
 
